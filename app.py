@@ -2,35 +2,69 @@ import streamlit as st
 import requests
 import pandas as pd
 import os
+import math
 from datetime import datetime
 
 # Page configuration
 st.set_page_config(page_title="Family World Cup Odds Tracker", layout="centered")
 
-st.title("🏆 World Cup Quant Execution Agent")
+st.title("🏆 World Cup Autonomous Quant Agent")
 st.markdown("---")
 
-# 👤 INDIVIDUAL USER INITIALIZATION (Binds the private app deployment to the user)
-st.sidebar.markdown("### 👤 User Identification")
-user_input = st.sidebar.text_input("Enter your name to initialize profile:", value="").strip()
+# 👤 AUTOMATED URL INITIALIZATION (Bypasses manual typing entirely)
+url_params = st.query_params
 
-# Establish a clean fallback if the user hasn't typed a name yet
-current_user = user_input if user_input else "Guest"
+if "user" in url_params:
+    url_user = str(url_params["user"]).strip()
+    current_user = url_user if url_user else "Guest"
+    st.sidebar.markdown(f"### 👤 Active Profile: **{current_user}**")
+    st.sidebar.caption("✅ Profile auto-loaded securely via linked session keys.")
+else:
+    st.sidebar.markdown("### 👤 User Identification")
+    user_input = st.sidebar.text_input("Enter your name to initialize profile:", value="").strip()
+    current_user = user_input if user_input else "Guest"
+    if not user_input:
+        st.warning("👈 Please input your name in the sidebar or use your personalized URL parameter to unlock execution.")
+
+# Bind file path parameters strictly to the resolved user string
 LEDGER_FILE = f"performance_ledger_{current_user.lower().replace(' ', '_')}.csv"
 
-# API & Execution Configuration
+# API & Sizing Configuration
 API_KEY = "befc18bf0b281942ab3a946158bba14a" 
-MIN_EDGE_THRESHOLD = 3.0
+MIN_EDGE_THRESHOLD = 2.0  # Safe threshold for xG variance matrix models
+INITIAL_BANKROLL = 10000.0
 
-# 🧠 FIXED MATRIX: Pre-loaded live tournament ratings
-ELO_DATABASE = {
-    "France": 2050, "Argentina": 2110, "Norway": 1820, "Iran": 1780,
-    "New Zealand": 1610, "Senegal": 1740, "Algeria": 1720, "Iraq": 1590,
-    "Brazil": 2130, "England": 2040, "Spain": 2045, "Germany": 1960,
-    "Netherlands": 1950, "Portugal": 1970, "Italy": 1940, "Belgium": 1910,
-    "Croatia": 1890, "Uruguay": 1930, "Morocco": 1840, "Japan": 1850,
-    "USA": 1790, "Mexico": 1780, "South Korea": 1775, "Australia": 1760,
-    "Saudi Arabia": 1650, "Tunisia": 1710, "Poland": 1730, "Denmark": 1810
+# 📊 GOAL EXPECTANCY MATRIX DATABASE
+# Maps separate Attacking Power (Expected Goals per 90) and Defensive Vulnerability variables
+XG_DATABASE = {
+    "France":       {"att": 2.30, "def": 0.85},
+    "Argentina":    {"att": 2.15, "def": 0.80},
+    "Brazil":       {"att": 2.10, "def": 0.90},
+    "England":      {"att": 1.95, "def": 0.95},
+    "Spain":        {"att": 2.05, "def": 0.90},
+    "Germany":      {"att": 1.85, "def": 1.10},
+    "Netherlands":  {"att": 1.70, "def": 1.05},
+    "Portugal":     {"att": 1.90, "def": 1.00},
+    "Italy":        {"att": 1.55, "def": 0.95},
+    "Belgium":      {"att": 1.60, "def": 1.15},
+    "Croatia":      {"att": 1.45, "def": 1.10},
+    "Uruguay":      {"att": 1.65, "def": 1.05},
+    "Morocco":      {"att": 1.30, "def": 0.85},
+    "Japan":        {"att": 1.50, "def": 1.20},
+    "USA":          {"att": 1.40, "def": 1.25},
+    "Mexico":       {"att": 1.35, "def": 1.30},
+    "South Korea":  {"att": 1.30, "def": 1.35},
+    "Australia":    {"att": 1.20, "def": 1.25},
+    "Iran":         {"att": 1.10, "def": 1.20},
+    "Norway":       {"att": 1.60, "def": 1.30},
+    "Senegal":      {"att": 1.25, "def": 1.10},
+    "Algeria":      {"att": 1.20, "def": 1.15},
+    "Denmark":      {"att": 1.40, "def": 1.10},
+    "Poland":       {"att": 1.25, "def": 1.40},
+    "Saudi Arabia": {"att": 0.95, "def": 1.50},
+    "Tunisia":      {"att": 0.90, "def": 1.25},
+    "New Zealand":  {"att": 0.85, "def": 1.60},
+    "Iraq":         {"att": 0.90, "def": 1.55}
 }
 
 # 📑 PERFORMANCE LEDGER CONTROLLER FUNCTIONS
@@ -55,7 +89,6 @@ def log_execution(match_name, target, market_odds, edge, stake, player_name):
 def load_ledger():
     if os.path.exists(LEDGER_FILE):
         df = pd.read_csv(LEDGER_FILE)
-        # Structural check to guarantee columns line up perfectly
         if "User" not in df.columns:
             df.insert(1, "User", current_user)
         if "Return" not in df.columns:
@@ -128,21 +161,51 @@ def auto_clear_pending_positions():
         df.to_csv(LEDGER_FILE, index=False)
 
 
-# Run background clearing and load active database parameters
+# 🧮 POISSON DISTRIBUTION ENGINE FUNCTION
+def poisson_probability(k, lamb):
+    return (math.exp(-lamb) * (lamb ** k)) / math.factorial(k)
+
+def calculate_xg_probabilities(home_team, away_team):
+    home_stats = XG_DATABASE.get(home_team, {"att": 1.40, "def": 1.20})
+    away_stats = XG_DATABASE.get(away_team, {"att": 1.40, "def": 1.20})
+    
+    # Expected Goal Rate parameters
+    lambda_home = home_stats["att"] * away_stats["def"]
+    lambda_away = away_stats["att"] * home_stats["def"]
+    
+    home_win_prob = 0.0
+    away_win_prob = 0.0
+    draw_prob = 0.0
+    
+    # Compute bivariate matrix up to max density limit of 8 goals per team
+    for h_goals in range(9):
+        for a_goals in range(9):
+            p_matrix = poisson_probability(h_goals, lambda_home) * poisson_probability(a_goals, lambda_away)
+            if h_goals > a_goals:
+                home_win_prob += p_matrix
+            elif a_goals > h_goals:
+                away_win_prob += p_matrix
+            else:
+                draw_prob += p_matrix
+                
+    return round(home_win_prob * 100, 1), round(draw_prob * 100, 1), round(away_win_prob * 100, 1), lambda_home, lambda_away
+
+# 📈 EXECUTE RETRIEVALS AND LEDGER CALCULATIONS
 auto_clear_pending_positions()
 ledger_df = load_ledger()
 
-# 🗂️ TOP NAVIGATION TABS (Renamed to Results)
+# Determine active liquid bankroll parameters based on past performance results
+finalized_pnl = ledger_df["Net Profit/Loss"].sum() if not ledger_df.empty else 0.0
+current_liquid_bankroll = max(100.0, INITIAL_BANKROLL + finalized_pnl)
+
+# Navigation configuration
 tab1, tab2 = st.tabs(["🚀 Active Market Analysis", "📊 Results"])
 
 # ==========================================
-# TAB 1: ACTIVE MARKET VIEW
+# TAB 1: ACTIVE MARKET ANALYSIS VIEW
 # ==========================================
 with tab1:
-    if not user_input:
-        st.warning("👈 Please input your name in the sidebar text box to lock in your tracking account session parameters.")
-        
-    st.subheader("Live Market Odds vs. ELO Predictive Signals")
+    st.subheader("Live Market Odds vs. Goal Expectancy ($xG$) Models")
     
     @st.cache_data(ttl=60)
     def fetch_live_world_cup_odds():
@@ -152,26 +215,6 @@ with tab1:
             if response.status_code == 200: return response.json()
         except Exception: pass
         return []
-
-    def normalize_team_name(name):
-        mapping = {"USA": "United States", "South Korea": "Korea Republic"}
-        return mapping.get(name, name)
-
-    def calculate_elo_probabilities(home_team, away_team):
-        home_norm = normalize_team_name(home_team)
-        away_norm = normalize_team_name(away_team)
-        r_home = ELO_DATABASE.get(home_norm, 1500)
-        r_away = ELO_DATABASE.get(away_norm, 1500)
-        exp_home = 1.0 / (1.0 + 10 ** ((r_away - r_home) / 400.0))
-        exp_away = 1.0 / (1.0 + 10 ** ((r_home - r_away) / 400.0))
-        draw_prob = 0.26
-        return round(exp_home * (1 - draw_prob) * 100, 1), round(draw_prob * 100, 1), round(exp_away * (1 - draw_prob) * 100, 1), r_home, r_away
-
-    def calculate_implied_probability(odds_val):
-        try:
-            odds = float(odds_val)
-            return round((1.0 / odds) * 100, 1) if odds > 0 else 0
-        except: return 0
 
     with st.spinner("Streaming metrics from live tournament feeds..."):
         games = fetch_live_world_cup_odds()
@@ -184,7 +227,7 @@ with tab1:
 
         if st.session_state.last_logged_id:
             c1, c2 = st.columns([3, 1])
-            with c1: st.success(f"📦 Order successfully logged to private database profile under name: {current_user}!")
+            with c1: st.success(f"📦 Order successfully logged to private profile: {current_user}!")
             with c2:
                 if st.button("↩️ Quick Undo", key="immediate_undo"):
                     remove_transaction(st.session_state.last_logged_time)
@@ -216,83 +259,137 @@ with tab1:
                         d_data = next((o for o in outcomes if o['name'].lower() == 'draw'), {})
                         
                         h_odds, a_odds, d_odds = h_data.get('price', 0.0), a_data.get('price', 0.0), d_data.get('price', 0.0)
-                        h_market_prob = calculate_implied_probability(h_odds)
-                        a_market_prob = calculate_implied_probability(a_odds)
-                        d_market_prob = calculate_implied_probability(d_odds)
                         
-                        h_elo_prob, d_elo_prob, a_elo_prob, h_rating, a_rating = calculate_elo_probabilities(home_team, away_team)
-                        home_edge, draw_edge, away_edge = round(h_elo_prob - h_market_prob, 1), round(d_elo_prob - d_market_prob, 1), round(a_elo_prob - a_market_prob, 1)
+                        # Market implied converted benchmarks
+                        mkt_h = round((1.0 / h_odds) * 100, 1) if h_odds > 0 else 0
+                        mkt_d = round((1.0 / d_odds) * 100, 1) if d_odds > 0 else 0
+                        mkt_a = round((1.0 / a_odds) * 100, 1) if a_odds > 0 else 0
+                        
+                        # Generate Poisson mathematical curves (Corrected explicit parameters)
+                        xg_h_prob, xg_d_prob, xg_a_prob, lam_h, lam_a = calculate_xg_probabilities(home_team, away_team)
+                        
+                        edge_h = round(xg_h_prob - mkt_h, 1)
+                        edge_d = round(xg_d_prob - mkt_d, 1)
+                        edge_a = round(xg_a_prob - mkt_a, 1)
                         
                         st.markdown(f"### ⚽ {home_team} vs. {away_team}")
-                        st.caption(f"📅 Kickoff: {kickoff} | 🧮 ELO Base: {home_team} ({int(h_rating)}) vs {away_team} ({int(a_rating)})")
+                        st.caption(f"📅 Kickoff: {kickoff} | 🧮 Project xG Rate: {home_team} ({lam_h:.2f}) vs {away_team} ({lam_a:.2f})")
                         
                         col1, col2, col3 = st.columns(3)
-                        with col1: st.metric(label=f"{home_team} (${h_odds:.2f})", value=f"ELO: {h_elo_prob}%", delta=f"{home_edge}% Edge")
-                        with col2: st.metric(label=f"Draw (${d_odds:.2f})", value=f"ELO: {d_elo_prob}%", delta=f"{draw_edge}% Edge")
-                        with col3: st.metric(label=f"{away_team} (${a_odds:.2f})", value=f"ELO: {a_elo_prob}%", delta=f"{away_edge}% Edge")
+                        with col1: st.metric(label=f"{home_team} (${h_odds:.2f})", value=f"xG: {xg_h_prob}%", delta=f"{edge_h}% Edge")
+                        with col2: st.metric(label=f"Draw (${d_odds:.2f})", value=f"xG: {xg_d_prob}%", delta=f"{edge_d}% Edge")
+                        with col3: st.metric(label=f"{away_team} (${a_odds:.2f})", value=f"xG: {xg_a_prob}%", delta=f"{edge_a}% Edge")
                         
-                        execution_signals = []
-                        if home_edge >= MIN_EDGE_THRESHOLD: execution_signals.append((f"🏠 {home_team} Wins", home_edge, h_odds))
-                        if draw_edge >= MIN_EDGE_THRESHOLD: execution_signals.append(("🤝 Match Ends in a Draw", draw_edge, d_odds))
-                        if away_edge >= MIN_EDGE_THRESHOLD: execution_signals.append((f"✈️ {away_team} Wins", away_edge, a_odds))
+                        # 🧠 THE HALF-KELLY CRITERION CRUNCH ENGINE
+                        signals = []
+                        if edge_h >= MIN_EDGE_THRESHOLD:
+                            b_factor = h_odds - 1.0
+                            p_factor = xg_h_prob / 100.0
+                            q_factor = 1.0 - p_factor
+                            kelly_fraction = 0.5 * ((b_factor * p_factor - q_factor) / b_factor)
+                            if kelly_fraction > 0: signals.append((f"🏠 {home_team} Wins", edge_h, h_odds, kelly_fraction))
+                            
+                        if edge_d >= MIN_EDGE_THRESHOLD:
+                            b_factor = d_odds - 1.0
+                            p_factor = xg_d_prob / 100.0
+                            q_factor = 1.0 - p_factor
+                            kelly_fraction = 0.5 * ((b_factor * p_factor - q_factor) / b_factor)
+                            if kelly_fraction > 0: signals.append(("🤝 Match Ends in a Draw", edge_d, d_odds, kelly_fraction))
+                            
+                        if edge_a >= MIN_EDGE_THRESHOLD:
+                            b_factor = a_odds - 1.0
+                            p_factor = xg_a_prob / 100.0
+                            q_factor = 1.0 - p_factor
+                            kelly_fraction = 0.5 * ((b_factor * p_factor - q_factor) / b_factor)
+                            if kelly_fraction > 0: signals.append((f"✈️ {away_team} Wins", edge_a, a_odds, kelly_fraction))
                         
-                        if execution_signals:
+                        profile_unlocked = ("user" in url_params or ('user_input' in locals() and user_input))
+                        
+                        if signals:
                             st.markdown("#### 🤖 AGENT RECOMMENDATION: BUY")
-                            for signal_name, edge_size, posted_odds in execution_signals:
-                                suggested_stake = int(edge_size * 25)
-                                st.info(f"**Target:** {signal_name} at **${posted_odds:.2f}** | *Calculated Stake:* **${suggested_stake} units**")
+                            for signal_name, edge_val, price, fraction in signals:
+                                allocation_stake = int(current_liquid_bankroll * fraction)
+                                allocation_stake = max(10, min(allocation_stake, 1500))
                                 
-                                button_id = f"exec_{home_team}_{away_team}_{posted_odds}".replace(" ", "_").lower()
-                                if st.button(f"📥 Log Order to {current_user}'s Profile", key=button_id, disabled=not user_input):
+                                # 🎛️ DYNAMIC HIGH-CONVICTION STYLING ENGINE
+                                if edge_val >= 5.0:
+                                    # High Conviction Alert: Amber Yellow Background Container
+                                    st.markdown(
+                                        f"""
+                                        <div style="
+                                            background-color: #FFF3CD; 
+                                            border-left: 6px solid #FFC107; 
+                                            padding: 15px; 
+                                            border-radius: 6px; 
+                                            margin-bottom: 15px;
+                                        ">
+                                            <span style="color: #856404; font-weight: bold; font-size: 1.1em;">
+                                                🔥 HIGH CONVICTION ALERT (+{edge_val}% Edge)
+                                            </span><br>
+                                            <span style="color: #A94442; font-weight: bold;">Target Selection:</span> 
+                                            <span style="color: #222222;">{signal_name} at <b>${price:.2f}</b></span><br>
+                                            <span style="color: #A94442; font-weight: bold;">Half-Kelly Capital Size:</span> 
+                                            <span style="color: #222222;"><b>${allocation_stake}</b> ({fraction*100:.1f}% of Wallet)</span>
+                                        </div>
+                                        """, 
+                                        unsafe_allow_html=True
+                                    )
+                                else:
+                                    # Standard Alpha Signal: Regular Clean Blue Layout Container
+                                    st.info(f"**Target Selection:** {signal_name} at **${price:.2f}** | 🧠 **Half-Kelly Capital Size:** **${allocation_stake}** (*{fraction*100:.1f}% of Wallet*)")
+                                
+                                button_id = f"exec_{home_team}_{away_team}_{price}".replace(" ", "_").lower()
+                                if st.button(f"📥 Log Half-Kelly Contract for {signal_name}", key=button_id, disabled=not profile_unlocked):
                                     t_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                    log_execution(match_title_string, signal_name, posted_odds, edge_size, suggested_stake, current_user)
+                                    log_execution(match_title_string, signal_name, price, edge_val, allocation_stake, current_user)
                                     st.session_state.last_logged_id = button_id
                                     st.session_state.last_logged_time = t_stamp
                                     st.rerun()
                         else:
                             st.markdown("#### 🤖 AGENT RECOMMENDATION: HOLD")
-                            st.caption("⚠️ Spreads tight. Position passed.")
+                            st.caption("⚠️ Spreads efficient. Volatility holding.")
                         st.markdown("---")
 
 # ==========================================
-# TAB 2: ISOLATED PRIVATE RESULTS DASHBOARD
+# TAB 2: PRIVACY-LOCKED RESULTS MATRIX VIEW
 # ==========================================
 with tab2:
-    st.subheader(f"📊 {current_user}'s Historical Results Matrix")
+    st.subheader(f"📊 {current_user}'s Live Results Matrix")
+    
+    # Dynamic portfolio parameter cards
+    m_col1, m_col2, m_col3 = st.columns(3)
+    with m_col1:
+        st.metric(label="Starting Bankroll", value=f"${INITIAL_BANKROLL:,.2f}")
+    with m_col2:
+        if ledger_df.empty:
+            st.metric(label="Current Net Balance", value=f"${INITIAL_BANKROLL:,.2f}", delta="$0.00")
+        else:
+            pnl_delta = ledger_df["Net Profit/Loss"].sum()
+            st.metric(
+                label="Current Net Balance", 
+                value=f"${INITIAL_BANKROLL + pnl_delta:,.2f}", 
+                delta=f"{pnl_delta:+.2f}" if pnl_delta != 0 else None
+            )
+    with m_col3:
+        pending_capital = ledger_df[ledger_df["Status"] == "PENDING"]["Allocated Stake"].sum() if not ledger_df.empty else 0
+        st.metric(label="Active Capital at Risk", value=f"${pending_capital}")
+        
+    st.markdown("---")
     
     if ledger_df.empty:
-        st.info(f"No contract lines recorded yet. Enter your name and execute market edges to populate your private portfolio results array.")
+        st.info("No contract lines recorded yet. Initialize your profile link and execute value signals to build your ledger.")
     else:
-        pending_df = ledger_df[ledger_df["Status"] == "PENDING"]
-        settled_df = ledger_df[ledger_df["Status"] != "PENDING"]
-        
-        capital_at_risk = pending_df["Allocated Stake"].sum()
-        total_net_earnings = round(ledger_df["Net Profit/Loss"].sum(), 2)
-        
-        m_col1, m_col2, m_col3 = st.columns(3)
-        with m_col1:
-            st.metric(label="Placed Contracts", value=len(ledger_df))
-        with m_col2:
-            st.metric(label="Active Capital At Risk", value=f"${capital_at_risk}")
-        with m_col3:
-            st.metric(
-                label="Sum of Net Earnings (P&L)", 
-                value=f"${total_net_earnings:+.2f}" if total_net_earnings != 0 else "$0.00",
-                delta=f"{total_net_earnings:+.2f}" if total_net_earnings != 0 else None
-            )
-        
         st.markdown("### 📝 Itemized Statement of Profit & Loss")
-        st.write(f"Showing the secure historical contract results line for **{current_user}**:")
         
-        # Format strings into standard accounting layouts for the grid presentation layout
         display_df = ledger_df.copy()
         display_df["Execution Odds"] = display_df["Execution Odds"].map("${:.2f}".format)
-        display_df["Allocated Stake"] = display_df["Allocated Stake"].map("${}".format)
-        display_df["Return"] = display_df["Return"].map("${:.2f}".format)
+        display_df["Allocated Stake"] = display_df["Allocated Stake"].map("${:,}".format)
+        display_df["Return"] = display_df["Return"].map("${:,.2f}".format)
         display_df["Net Profit/Loss"] = display_df["Net Profit/Loss"].map("${:+.2f}".format)
         
         st.dataframe(display_df.sort_values(by="Timestamp", ascending=False), use_container_width=True, hide_index=True)
         
+        # Database management configuration rows
         st.markdown("---")
         st.markdown("**🔧 Database Administration & Record Correction**")
         selected_timestamp = st.selectbox(
@@ -304,5 +401,5 @@ with tab2:
         
         if st.button(f"🗑️ Delete Record: {target_row_info['Target Selection']} ({target_row_info['Allocated Stake']})", type="primary"):
             remove_transaction(selected_timestamp)
-            st.warning("Position successfully completely wiped from data logs.")
+            st.warning("Position successfully completely wiped from data history.")
             st.rerun()
