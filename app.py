@@ -125,10 +125,24 @@ def auto_clear_pending_positions():
     if not results:
         return False
 
+    # 🗺️ ALIAS TRANSLATION MATRIX: Maps shorthand strings to standard API formats
+    TEAM_ALIASES = {
+        "DR Congo": "Democratic Republic of the Congo",
+        "USA": "United States",
+        "South Korea": "Republic of Korea"
+    }
+
     updated = False
     for idx, row in df.iterrows():
         if row["Status"] == "PENDING":
-            match_data = next((m for m in results if f"{m.get('home_team')} vs. {m.get('away_team')}" == row["Match"]), None)
+            # Translate ledger shorthand text to standard format for API pairing
+            ledger_match = str(row["Match"])
+            for shorthand, canonical in TEAM_ALIASES.items():
+                ledger_match = ledger_match.replace(shorthand, canonical)
+            
+            # Cross-reference live metrics with translated targets
+            match_data = next((m for m in results if f"{m.get('home_team')} vs. {m.get('away_team')}" == ledger_match), None)
+            
             if match_data and match_data.get("completed"):
                 home_team = match_data.get("home_team")
                 away_team = match_data.get("away_team")
@@ -138,10 +152,17 @@ def auto_clear_pending_positions():
                     h_score = int(next((s["score"] for s in scores if s["name"] == home_team), 0))
                     a_score = int(next((s["score"] for s in scores if s["name"] == away_team), 0))
                     
+                    # Reverse-translate standard names back to ledger formatting for display
+                    display_home = home_team
+                    display_away = away_team
+                    for shorthand, canonical in TEAM_ALIASES.items():
+                        if canonical == home_team: display_home = shorthand
+                        if canonical == away_team: display_away = shorthand
+                    
                     if h_score > a_score:
-                        true_outcome = f"🏠 {home_team} Wins"
+                        true_outcome = f"🏠 {display_home} Wins"
                     elif a_score > h_score:
-                        true_outcome = f"✈️ {away_team} Wins"
+                        true_outcome = f"✈️ {display_away} Wins"
                     else:
                         true_outcome = "🤝 Match Ends in a Draw"
                     
