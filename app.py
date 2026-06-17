@@ -109,8 +109,8 @@ def remove_transaction(timestamp):
 
 def fetch_live_results():
     try:
-        # FIXED: Changed sport parameter from 'soccer' to 'upcoming' to resolve the 404 Error code
-        score_url = f"https://api.the-odds-api.com/v4/sports/upcoming/scores/?apiKey={API_KEY}&daysFrom=7"
+        # STRUCTURAL FIX: Uses canonical sport key alongside required 3-day window
+        score_url = f"https://api.the-odds-api.com/v4/sports/soccer_fifa_world_cup/scores/?apiKey={API_KEY}&daysFrom=3"
         response = requests.get(score_url, timeout=5.0)
         if response.status_code == 200: return response.json()
     except Exception: pass
@@ -210,7 +210,7 @@ def poisson_probability(k, lamb):
     return (math.exp(-lamb) * (lamb ** k)) / math.factorial(k)
 
 def calculate_xg_probabilities(home_team, away_team):
-    home_stats = XG_DATABASE.get(home_team, {"att": 1.40, "def": 1.20})
+    home_stats = XG_DATABASE.get(home_team, {"att": 2.30, "def": 0.85})
     away_stats = XG_DATABASE.get(away_team, {"att": 1.40, "def": 1.20})
     
     lambda_home = home_stats["att"] * away_stats["def"]
