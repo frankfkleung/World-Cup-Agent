@@ -109,7 +109,8 @@ def remove_transaction(timestamp):
 
 def fetch_live_results():
     try:
-        score_url = f"https://api.the-odds-api.com/v4/sports/soccer/scores/?apiKey={API_KEY}&daysFrom=3"
+        # Extended looking window to 7 days to capture past matches reliably
+        score_url = f"https://api.the-odds-api.com/v4/sports/soccer/scores/?apiKey={API_KEY}&daysFrom=7"
         response = requests.get(score_url, timeout=5.0)
         if response.status_code == 200: return response.json()
     except Exception: pass
@@ -125,7 +126,7 @@ def auto_clear_pending_positions():
     if not results:
         return False
 
-    # 🗺️ ALIAS TRANSLATION MATRIX: Maps shorthand strings to standard API formats
+    # 🗺️ ALIAS TRANSLATION MATRIX
     TEAM_ALIASES = {
         "DR Congo": "Democratic Republic of the Congo",
         "USA": "United States",
@@ -135,13 +136,18 @@ def auto_clear_pending_positions():
     updated = False
     for idx, row in df.iterrows():
         if row["Status"] == "PENDING":
-            # Translate ledger shorthand text to standard format for API pairing
             ledger_match = str(row["Match"])
             for shorthand, canonical in TEAM_ALIASES.items():
                 ledger_match = ledger_match.replace(shorthand, canonical)
             
-            # Cross-reference live metrics with translated targets
-            match_data = next((m for m in results if f"{m.get('home_team')} vs. {m.get('away_team')}" == ledger_match), None)
+            # Robust pairing check: Confirms if both individual API teams are referenced inside ledger string
+            match_data = None
+            for m in results:
+                h_api = m.get('home_team', '')
+                a_api = m.get('away_team', '')
+                if h_api and a_api and (h_api in ledger_match) and (a_api in ledger_match):
+                    match_data = m
+                    break
             
             if match_data and match_data.get("completed"):
                 home_team = match_data.get("home_team")
@@ -149,10 +155,12 @@ def auto_clear_pending_positions():
                 scores = match_data.get("scores", [])
                 
                 if scores:
-                    h_score = int(next((s["score"] for s in scores if s["name"] == home_team), 0))
-                    a_score = int(next((s["score"] for s in scores if s["name"] == away_team), 0))
+                    try:
+                        h_score = int(next((s["score"] for s in scores if s["name"] == home_team), 0))
+                        a_score = int(next((s["score"] for s in scores if s["name"] == away_team), 0))
+                    except (ValueError, TypeError):
+                        continue
                     
-                    # Reverse-translate standard names back to ledger formatting for display
                     display_home = home_team
                     display_away = away_team
                     for shorthand, canonical in TEAM_ALIASES.items():
@@ -212,18 +220,11 @@ def calculate_xg_probabilities(home_team, away_team):
 # =================================================================
 # 🔄 AUTOMATED REAL-TIME LIFE-CYCLE BACKGROUND CONTROLLER
 # =================================================================
-auto_clear_pending_positions()
+# Checked synchronously at script load; forces layout rebuild upon database change
+if auto_clear_pending_positions():
+    st.rerun()
+
 ledger_df = load_ledger()
-
-@st.fragment(run_every=600)  # Executes a silent background sweep every 10 minutes
-def execute_silent_live_score_sync():
-    if os.path.exists(LEDGER_FILE):
-        df_audit = pd.read_csv(LEDGER_FILE)
-        if "PENDING" in df_audit["Status"].values:
-            if auto_clear_pending_positions():
-                st.rerun()
-
-execute_silent_live_score_sync()
 
 # Determine active liquid bankroll parameters based on past performance results
 finalized_pnl = ledger_df["Net Profit/Loss"].sum() if not ledger_df.empty else 0.0
