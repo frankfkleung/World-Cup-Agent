@@ -109,7 +109,6 @@ def remove_transaction(timestamp):
 
 def fetch_live_results():
     try:
-        # STRUCTURAL FIX: Uses canonical sport key alongside required 3-day window
         score_url = f"https://api.the-odds-api.com/v4/sports/soccer_fifa_world_cup/scores/?apiKey={API_KEY}&daysFrom=3"
         response = requests.get(score_url, timeout=5.0)
         if response.status_code == 200: return response.json()
@@ -427,7 +426,23 @@ with tab2:
         display_df["Return"] = display_df["Return"].map("${:,.2f}".format)
         display_df["Net Profit/Loss"] = display_df["Net Profit/Loss"].map("${:+.2f}".format)
         
-        st.dataframe(display_df.sort_values(by="Timestamp", ascending=False), use_container_width=True, hide_index=True)
+        # 🎨 STYLING ENGINE RULESET DEF_BLOCK
+        def apply_conditional_row_styles(val):
+            if val == "WIN":
+                return "background-color: #D4EDDA; color: #155724; font-weight: bold; border-radius: 4px;"
+            elif val == "LOSS":
+                return "background-color: #F8D7DA; color: #721C24; font-weight: bold; border-radius: 4px;"
+            elif val == "PENDING":
+                return "background-color: #FFF3CD; color: #856404; font-weight: bold; border-radius: 4px;"
+            return ""
+
+        # Map the styling rules explicitly onto the "Status" column vector element
+        styled_output_df = display_df.sort_values(by="Timestamp", ascending=False).style.map(
+            apply_conditional_row_styles, 
+            subset=["Status"]
+        )
+        
+        st.dataframe(styled_output_df, use_container_width=True, hide_index=True)
         
         st.markdown("---")
         st.markdown("**🔧 Database Administration & Record Correction**")
