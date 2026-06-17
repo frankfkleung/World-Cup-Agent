@@ -126,26 +126,31 @@ def auto_clear_pending_positions():
     if not results:
         return False
 
-    # 🗺️ ALIAS TRANSLATION MATRIX
-    TEAM_ALIASES = {
-        "DR Congo": "Democratic Republic of the Congo",
-        "USA": "United States",
-        "South Korea": "Republic of Korea"
-    }
-
     updated = False
     for idx, row in df.iterrows():
         if row["Status"] == "PENDING":
-            ledger_match = str(row["Match"])
-            for shorthand, canonical in TEAM_ALIASES.items():
-                ledger_match = ledger_match.replace(shorthand, canonical)
+            ledger_match_clean = str(row["Match"]).lower()
             
-            # Robust pairing check: Confirms if both individual API teams are referenced inside ledger string
             match_data = None
             for m in results:
-                h_api = m.get('home_team', '')
-                a_api = m.get('away_team', '')
-                if h_api and a_api and (h_api in ledger_match) and (a_api in ledger_match):
+                h_api = m.get('home_team', '').lower()
+                a_api = m.get('away_team', '').lower()
+                
+                for suffix in [" national football team", " men's national soccer team", " federation", " democratic republic of the"]:
+                    h_api = h_api.replace(suffix, "")
+                    a_api = a_api.replace(suffix, "")
+                
+                if "congo" in h_api or "dr congo" in h_api: h_api = "congo"
+                if "congo" in a_api or "dr congo" in a_api: a_api = "congo"
+                if "usa" in h_api or "united states" in h_api: h_api = "usa"
+                if "usa" in a_api or "united states" in a_api: a_api = "usa"
+                if "korea" in h_api: h_api = "korea"
+                if "korea" in a_api: a_api = "korea"
+
+                has_home = (h_api in ledger_match_clean) or ("congo" in h_api and "congo" in ledger_match_clean)
+                has_away = (a_api in ledger_match_clean) or ("congo" in a_api and "congo" in ledger_match_clean)
+                
+                if has_home and has_away:
                     match_data = m
                     break
             
@@ -154,36 +159,48 @@ def auto_clear_pending_positions():
                 away_team = match_data.get("away_team")
                 scores = match_data.get("scores", [])
                 
+                h_score = 0
+                a_score = 0
+                scores_parsed = False
+                
                 if scores:
                     try:
                         h_score = int(next((s["score"] for s in scores if s["name"] == home_team), 0))
                         a_score = int(next((s["score"] for s in scores if s["name"] == away_team), 0))
+                        scores_parsed = True
                     except (ValueError, TypeError):
-                        continue
-                    
-                    display_home = home_team
-                    display_away = away_team
-                    for shorthand, canonical in TEAM_ALIASES.items():
-                        if canonical == home_team: display_home = shorthand
-                        if canonical == away_team: display_away = shorthand
-                    
+                        pass 
+                
+                teams = str(row["Match"]).split(" vs. ")
+                display_home = teams[0] if len(teams) > 0 else home_team
+                display_away = teams[1] if len(teams) > 1 else away_team
+                
+                target_selection = str(row["Target Selection"])
+                is_win = False
+                
+                if scores_parsed:
                     if h_score > a_score:
                         true_outcome = f"🏠 {display_home} Wins"
                     elif a_score > h_score:
                         true_outcome = f"✈️ {display_away} Wins"
                     else:
                         true_outcome = "🤝 Match Ends in a Draw"
-                    
-                    if row["Target Selection"] == true_outcome:
-                        df.at[idx, "Status"] = "WIN"
-                        payout = round(row["Allocated Stake"] * row["Execution Odds"], 2)
-                        df.at[idx, "Return"] = payout
-                        df.at[idx, "Net Profit/Loss"] = round(payout - row["Allocated Stake"], 2)
-                    else:
-                        df.at[idx, "Status"] = "LOSS"
-                        df.at[idx, "Return"] = 0.0
-                        df.at[idx, "Net Profit/Loss"] = float(-row["Allocated Stake"])
-                    updated = True
+                    is_win = (target_selection == true_outcome)
+                else:
+                    # Fallback rule: If completed with parsing errors, allow Draw positions to settle
+                    if "Draw" in target_selection or "Ends in a Draw" in target_selection:
+                        is_win = True  
+                
+                if is_win:
+                    df.at[idx, "Status"] = "WIN"
+                    payout = round(row["Allocated Stake"] * row["Execution Odds"], 2)
+                    df.at[idx, "Return"] = payout
+                    df.at[idx, "Net Profit/Loss"] = round(payout - row["Allocated Stake"], 2)
+                else:
+                    df.at[idx, "Status"] = "LOSS"
+                    df.at[idx, "Return"] = 0.0
+                    df.at[idx, "Net Profit/Loss"] = float(-row["Allocated Stake"])
+                updated = True
                     
     if updated:
         df.to_csv(LEDGER_FILE, index=False)
