@@ -35,7 +35,6 @@ MIN_EDGE_THRESHOLD = 2.0  # Safe threshold for xG variance matrix models
 INITIAL_BANKROLL = 10000.0
 
 # 📊 GOAL EXPECTANCY MATRIX DATABASE
-# Maps separate Attacking Power (Expected Goals per 90) and Defensive Vulnerability variables
 XG_DATABASE = {
     "France":       {"att": 2.30, "def": 0.85},
     "Argentina":    {"att": 2.15, "def": 0.80},
@@ -118,13 +117,13 @@ def fetch_live_results():
 
 def auto_clear_pending_positions():
     if not os.path.exists(LEDGER_FILE):
-        return
+        return False
     df = pd.read_csv(LEDGER_FILE)
     if df.empty or "PENDING" not in df["Status"].values:
-        return
+        return False
     results = fetch_live_results()
     if not results:
-        return
+        return False
 
     updated = False
     for idx, row in df.iterrows():
@@ -159,7 +158,7 @@ def auto_clear_pending_positions():
                     
     if updated:
         df.to_csv(LEDGER_FILE, index=False)
-
+    return updated
 
 # 🧮 POISSON DISTRIBUTION ENGINE FUNCTION
 def poisson_probability(k, lamb):
@@ -169,7 +168,6 @@ def calculate_xg_probabilities(home_team, away_team):
     home_stats = XG_DATABASE.get(home_team, {"att": 1.40, "def": 1.20})
     away_stats = XG_DATABASE.get(away_team, {"att": 1.40, "def": 1.20})
     
-    # Expected Goal Rate parameters
     lambda_home = home_stats["att"] * away_stats["def"]
     lambda_away = away_stats["att"] * home_stats["def"]
     
@@ -177,7 +175,6 @@ def calculate_xg_probabilities(home_team, away_team):
     away_win_prob = 0.0
     draw_prob = 0.0
     
-    # Compute bivariate matrix up to max density limit of 8 goals per team
     for h_goals in range(9):
         for a_goals in range(9):
             p_matrix = poisson_probability(h_goals, lambda_home) * poisson_probability(a_goals, lambda_away)
@@ -190,9 +187,22 @@ def calculate_xg_probabilities(home_team, away_team):
                 
     return round(home_win_prob * 100, 1), round(draw_prob * 100, 1), round(away_win_prob * 100, 1), lambda_home, lambda_away
 
-# 📈 EXECUTE RETRIEVALS AND LEDGER CALCULATIONS
+
+# =================================================================
+# 🔄 AUTOMATED REAL-TIME LIFE-CYCLE BACKGROUND CONTROLLER
+# =================================================================
 auto_clear_pending_positions()
 ledger_df = load_ledger()
+
+@st.fragment(run_every=600)  # Executes a silent background sweep every 10 minutes
+def execute_silent_live_score_sync():
+    if os.path.exists(LEDGER_FILE):
+        df_audit = pd.read_csv(LEDGER_FILE)
+        if "PENDING" in df_audit["Status"].values:
+            if auto_clear_pending_positions():
+                st.rerun()
+
+execute_silent_live_score_sync()
 
 # Determine active liquid bankroll parameters based on past performance results
 finalized_pnl = ledger_df["Net Profit/Loss"].sum() if not ledger_df.empty else 0.0
@@ -260,12 +270,10 @@ with tab1:
                         
                         h_odds, a_odds, d_odds = h_data.get('price', 0.0), a_data.get('price', 0.0), d_data.get('price', 0.0)
                         
-                        # Market implied converted benchmarks
                         mkt_h = round((1.0 / h_odds) * 100, 1) if h_odds > 0 else 0
                         mkt_d = round((1.0 / d_odds) * 100, 1) if d_odds > 0 else 0
                         mkt_a = round((1.0 / a_odds) * 100, 1) if a_odds > 0 else 0
                         
-                        # Generate Poisson mathematical curves (Corrected explicit parameters)
                         xg_h_prob, xg_d_prob, xg_a_prob, lam_h, lam_a = calculate_xg_probabilities(home_team, away_team)
                         
                         edge_h = round(xg_h_prob - mkt_h, 1)
@@ -280,7 +288,6 @@ with tab1:
                         with col2: st.metric(label=f"Draw (${d_odds:.2f})", value=f"xG: {xg_d_prob}%", delta=f"{edge_d}% Edge")
                         with col3: st.metric(label=f"{away_team} (${a_odds:.2f})", value=f"xG: {xg_a_prob}%", delta=f"{edge_a}% Edge")
                         
-                        # 🧠 THE HALF-KELLY CRITERION CRUNCH ENGINE
                         signals = []
                         if edge_h >= MIN_EDGE_THRESHOLD:
                             b_factor = h_odds - 1.0
@@ -311,9 +318,7 @@ with tab1:
                                 allocation_stake = int(current_liquid_bankroll * fraction)
                                 allocation_stake = max(10, min(allocation_stake, 1500))
                                 
-                                # 🎛️ DYNAMIC HIGH-CONVICTION STYLING ENGINE
                                 if edge_val >= 5.0:
-                                    # High Conviction Alert: Amber Yellow Background Container
                                     st.markdown(
                                         f"""
                                         <div style="
@@ -335,7 +340,6 @@ with tab1:
                                         unsafe_allow_html=True
                                     )
                                 else:
-                                    # Standard Alpha Signal: Regular Clean Blue Layout Container
                                     st.info(f"**Target Selection:** {signal_name} at **${price:.2f}** | 🧠 **Half-Kelly Capital Size:** **${allocation_stake}** (*{fraction*100:.1f}% of Wallet*)")
                                 
                                 button_id = f"exec_{home_team}_{away_team}_{price}".replace(" ", "_").lower()
@@ -356,7 +360,6 @@ with tab1:
 with tab2:
     st.subheader(f"📊 {current_user}'s Live Results Matrix")
     
-    # Dynamic portfolio parameter cards
     m_col1, m_col2, m_col3 = st.columns(3)
     with m_col1:
         st.metric(label="Starting Bankroll", value=f"${INITIAL_BANKROLL:,.2f}")
@@ -389,7 +392,6 @@ with tab2:
         
         st.dataframe(display_df.sort_values(by="Timestamp", ascending=False), use_container_width=True, hide_index=True)
         
-        # Database management configuration rows
         st.markdown("---")
         st.markdown("**🔧 Database Administration & Record Correction**")
         selected_timestamp = st.selectbox(
