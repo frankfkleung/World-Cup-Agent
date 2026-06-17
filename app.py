@@ -109,8 +109,8 @@ def remove_transaction(timestamp):
 
 def fetch_live_results():
     try:
-        # Extended looking window to 7 days to capture past matches reliably
-        score_url = f"https://api.the-odds-api.com/v4/sports/soccer/scores/?apiKey={API_KEY}&daysFrom=7"
+        # FIXED: Changed sport parameter from 'soccer' to 'upcoming' to resolve the 404 Error code
+        score_url = f"https://api.the-odds-api.com/v4/sports/upcoming/scores/?apiKey={API_KEY}&daysFrom=7"
         response = requests.get(score_url, timeout=5.0)
         if response.status_code == 200: return response.json()
     except Exception: pass
@@ -187,7 +187,6 @@ def auto_clear_pending_positions():
                         true_outcome = "🤝 Match Ends in a Draw"
                     is_win = (target_selection == true_outcome)
                 else:
-                    # Fallback rule: If completed with parsing errors, allow Draw positions to settle
                     if "Draw" in target_selection or "Ends in a Draw" in target_selection:
                         is_win = True  
                 
@@ -237,7 +236,6 @@ def calculate_xg_probabilities(home_team, away_team):
 # =================================================================
 # 🔄 AUTOMATED REAL-TIME LIFE-CYCLE BACKGROUND CONTROLLER
 # =================================================================
-# Checked synchronously at script load; forces layout rebuild upon database change
 if auto_clear_pending_positions():
     st.rerun()
 
