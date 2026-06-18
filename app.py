@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 import os
 import math
+import base64
 from datetime import datetime
 
 # Page configuration
@@ -33,6 +34,103 @@ LEDGER_FILE = f"performance_ledger_{current_user.lower().replace(' ', '_')}.csv"
 API_KEY = "befc18bf0b281942ab3a946158bba14a" 
 MIN_EDGE_THRESHOLD = 2.0  # Safe threshold for xG variance matrix models
 INITIAL_BANKROLL = 10000.0
+
+# GitHub Storage Configuration
+GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
+REPO_NAME = "frankfkleung/world-cup-agent"
+
+# 📑 PERMANENT GITHUB STORAGE BACKEND CONTROLLER
+def push_to_github(file_name, content_df, message):
+    """Pushes a Pandas DataFrame as a CSV file directly to your private GitHub Repo via API."""
+    if not GITHUB_TOKEN:
+        return
+        
+    csv_content = content_df.to_csv(index=False)
+    url = f"https://api.github.com/repos/{REPO_NAME}/contents/{file_name}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    
+    response = requests.get(url, headers=headers)
+    sha = None
+    if response.status_code == 200:
+        sha = response.json().get("sha")
+        
+    payload = {
+        "message": message,
+        "content": base64.b64encode(csv_content.encode("utf-8")).decode("utf-8")
+    }
+    if sha:
+        payload["sha"] = sha
+        
+    requests.put(url, headers=headers, json=payload)
+
+def load_ledger():
+    """Attempts to pull your personal CSV directly from GitHub to keep data permanent across reboots."""
+    if os.path.exists(LEDGER_FILE):
+        df = pd.read_csv(LEDGER_FILE)
+    elif GITHUB_TOKEN:
+        url = f"https://api.github.com/repos/{REPO_NAME}/contents/{LEDGER_FILE}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        res = requests.get(url, headers=headers)
+        if res.status_code == 200:
+            file_data = res.json()
+            raw_csv = base64.b64decode(file_data["content"]).decode("utf-8")
+            from io import StringIO
+            df = pd.read_csv(StringIO(raw_csv))
+            df.to_csv(LEDGER_FILE, index=False)  # Cache locally inside container session
+        else:
+            df = pd.DataFrame(columns=["Timestamp", "User", "Match", "Target Selection", "Execution Odds", "Calculated Edge %", "Allocated Stake", "Return", "Net Profit/Loss", "Status"])
+    else:
+        df = pd.DataFrame(columns=["Timestamp", "User", "Match", "Target Selection", "Execution Odds", "Calculated Edge %", "Allocated Stake", "Return", "Net Profit/Loss", "Status"])
+        
+    if not df.empty:
+        if "User" not in df.columns: df.insert(1, "User", current_user)
+        if "Return" not in df.columns: df["Return"] = 0.0
+        if "Net Profit/Loss" not in df.columns: df["Net Profit/Loss"] = 0.0
+    return df
+
+def log_execution(match_name, target, market_odds, edge, stake, player_name):
+    """Appends your bet selection to the ledger and immediately pushes to GitHub."""
+    new_row = pd.DataFrame([{
+        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "User": player_name,
+        "Match": match_name,
+        "Target Selection": target,
+        "Execution Odds": float(market_odds),
+        "Calculated Edge %": float(edge),
+        "Allocated Stake": int(stake),
+        "Return": 0.0,
+        "Net Profit/Loss": 0.0,
+        "Status": "PENDING"
+    }])
+    
+    current_df = load_ledger()
+    updated_df = pd.concat([current_df, new_row], ignore_index=True)
+    
+    updated_df.to_csv(LEDGER_FILE, index=False)
+    push_to_github(LEDGER_FILE, updated_df, f"📥 Auto-Logged: {target} for {player_name}")
+
+def remove_transaction(timestamp):
+    """Wipes a specific record row out of the system and updates your GitHub backup repository."""
+    current_df = load_ledger()
+    if not current_df.empty:
+        updated_df = current_df[current_df['Timestamp'] != timestamp]
+        
+        if updated_df.empty:
+            try: os.remove(LEDGER_FILE)
+            except: pass
+            url = f"https://api.github.com/repos/{REPO_NAME}/contents/{LEDGER_FILE}"
+            headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+            res = requests.get(url, headers=headers)
+            if res.status_code == 200:
+                sha = res.json().get("sha")
+                payload = {"message": "🗑️ Wiped ledger completely", "sha": sha}
+                requests.delete(url, headers=headers, json=payload)
+        else:
+            updated_df.to_csv(LEDGER_FILE, index=False)
+            push_to_github(LEDGER_FILE, updated_df, f"🗑️ Removed Transaction Record: {timestamp}")
 
 # 📊 GOAL EXPECTANCY MATRIX DATABASE
 XG_DATABASE = {
@@ -65,47 +163,6 @@ XG_DATABASE = {
     "New Zealand":  {"att": 0.85, "def": 1.60},
     "Iraq":         {"att": 0.90, "def": 1.55}
 }
-
-# 📑 PERFORMANCE LEDGER CONTROLLER FUNCTIONS
-def log_execution(match_name, target, market_odds, edge, stake, player_name):
-    new_row = pd.DataFrame([{
-        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "User": player_name,
-        "Match": match_name,
-        "Target Selection": target,
-        "Execution Odds": float(market_odds),
-        "Calculated Edge %": float(edge),
-        "Allocated Stake": int(stake),
-        "Return": 0.0,
-        "Net Profit/Loss": 0.0,
-        "Status": "PENDING"
-    }])
-    if not os.path.exists(LEDGER_FILE):
-        new_row.to_csv(LEDGER_FILE, index=False)
-    else:
-        new_row.to_csv(LEDGER_FILE, mode='a', header=False, index=False)
-
-def load_ledger():
-    if os.path.exists(LEDGER_FILE):
-        df = pd.read_csv(LEDGER_FILE)
-        if "User" not in df.columns:
-            df.insert(1, "User", current_user)
-        if "Return" not in df.columns:
-            df["Return"] = 0.0
-        if "Net Profit/Loss" not in df.columns:
-            df["Net Profit/Loss"] = 0.0
-        return df
-    return pd.DataFrame(columns=["Timestamp", "User", "Match", "Target Selection", "Execution Odds", "Calculated Edge %", "Allocated Stake", "Return", "Net Profit/Loss", "Status"])
-
-def remove_transaction(timestamp):
-    if os.path.exists(LEDGER_FILE):
-        df = pd.read_csv(LEDGER_FILE)
-        df = df[df['Timestamp'] != timestamp]
-        if df.empty:
-            try: os.remove(LEDGER_FILE)
-            except: pass
-        else:
-            df.to_csv(LEDGER_FILE, index=False)
 
 def fetch_live_results():
     try:
@@ -202,6 +259,7 @@ def auto_clear_pending_positions():
                     
     if updated:
         df.to_csv(LEDGER_FILE, index=False)
+        push_to_github(LEDGER_FILE, df, "🔄 Auto-Settled Completed Match Records")
     return updated
 
 # 🧮 POISSON DISTRIBUTION ENGINE FUNCTION
@@ -230,7 +288,6 @@ def calculate_xg_probabilities(home_team, away_team):
                 draw_prob += p_matrix
                 
     return round(home_win_prob * 100, 1), round(draw_prob * 100, 1), round(away_win_prob * 100, 1), lambda_home, lambda_away
-
 
 # =================================================================
 # 🔄 AUTOMATED REAL-TIME LIFE-CYCLE BACKGROUND CONTROLLER
@@ -426,7 +483,6 @@ with tab2:
         display_df["Return"] = display_df["Return"].map("${:,.2f}".format)
         display_df["Net Profit/Loss"] = display_df["Net Profit/Loss"].map("${:+.2f}".format)
         
-        # 🎨 STYLING ENGINE RULESET DEF_BLOCK
         def apply_conditional_row_styles(val):
             if val == "WIN":
                 return "background-color: #D4EDDA; color: #155724; font-weight: bold; border-radius: 4px;"
@@ -436,7 +492,6 @@ with tab2:
                 return "background-color: #FFF3CD; color: #856404; font-weight: bold; border-radius: 4px;"
             return ""
 
-        # Map the styling rules explicitly onto the "Status" column vector element
         styled_output_df = display_df.sort_values(by="Timestamp", ascending=False).style.map(
             apply_conditional_row_styles, 
             subset=["Status"]
